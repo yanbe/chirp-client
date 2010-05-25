@@ -319,7 +319,7 @@ def onRowActivated(treeView, path, view_column):
         webbrowser.open('http://twitter.com/'+
             target_data['screen_name'])
 
-def onMenuActivated(item, text, status, statusView):
+def onMenuActivated(item, text, status):
     if text=='Reply':
         newStatus = '@%s ' % status['user']['screen_name']
         statusView.get_buffer().insert_at_cursor(newStatus)
@@ -331,7 +331,7 @@ def onMenuActivated(item, text, status, statusView):
         u = 'http://api.twitter.com/1/favorites/create/%s.json' % status['id']
         j = json.load(urllib2.urlopen(u, data='')) # data param to be POST
 
-def onButtonPressed(treeview, event, statusView):
+def onButtonPressed(treeview, event, statusPopupMenu):
     if event.button == 3:
         x = int(event.x)
         y = int(event.y)
@@ -342,14 +342,11 @@ def onButtonPressed(treeview, event, statusView):
             status = treeview.props.model[path][0].get_data('status')
             treeview.grab_focus()
             treeview.set_cursor(path, col, 0)
-            menu = gtk.Menu()
-            menu.popup(None, None, None, event.button, time)
-            for label in ('Reply', 'Favorite', 'Retweet'):
-                menuItem = gtk.MenuItem(label)
-                menuItem.connect('activate', onMenuActivated, label, status,
-                    statusView)
-                menu.append(menuItem)
-            menu.show_all()
+            statusPopupMenu.popup(None, None, None, event.button, time)
+            for menuItem in statusPopupMenu.get_children():
+                menuItem.connect('activate', onMenuActivated, 
+                    menuItem.props.label, status)
+            statusPopupMenu.show_all()
 
 def onQueryTooltip(treeview, x, y, keyboard_mode, tooltip):
     pthinfo = treeview.get_path_at_pos(x, y)
@@ -397,7 +394,8 @@ def initTreeView(gladeObject, viewNamePrefix, columnNameTypePairs,
 
     view.connect('row-activated', onRowActivated)
     statusView = gladeObject.get_widget('statusView')
-    view.connect('button-press-event', onButtonPressed, statusView)
+    statusPopupMenu = gladeObject.get_widget('statusPopupMenu')
+    view.connect('button-press-event', onButtonPressed, statusPopupMenu)
     view.connect('query-tooltip', onQueryTooltip)
     return view
 
