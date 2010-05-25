@@ -459,35 +459,25 @@ def main():
     authDialog.connect('response', initAccountInfo, gladeObject)
     authDialog.run()
 
-    homeView = initTreeView(gladeObject, 'home', 
-        (('icon', gtk.gdk.Pixbuf),
-         ('status', gobject.TYPE_STRING)))
+
     replyView = initTreeView(gladeObject, 'reply', 
         (('icon', gtk.gdk.Pixbuf),
          ('status', gobject.TYPE_STRING)), modelType=gtk.TreeStore)
-    deleteView = initTreeView(gladeObject, 'delete', 
-        (('icon', gtk.gdk.Pixbuf),
-         ('status', gobject.TYPE_STRING)))
-    dmView = initTreeView(gladeObject, 'dm', 
-        (('from', gtk.gdk.Pixbuf),
-         ('to', gtk.gdk.Pixbuf),
-         ('status', gobject.TYPE_STRING)))
-    favoriteView = initTreeView(gladeObject, 'favorite', 
-        (('from', gtk.gdk.Pixbuf),
-         ('to', gtk.gdk.Pixbuf), 
-         ('status', gobject.TYPE_STRING)))
-    retweetView = initTreeView(gladeObject, 'retweet',
-        (('from', gtk.gdk.Pixbuf),
-         ('to', gtk.gdk.Pixbuf),
-         ('status', gobject.TYPE_STRING)))
-    followView = initTreeView(gladeObject, 'follow',
-        (('from', gtk.gdk.Pixbuf),
-         ('to', gtk.gdk.Pixbuf),
-         ('info', gobject.TYPE_STRING)))
-    listView = initTreeView(gladeObject, 'list',
-        (('from', gtk.gdk.Pixbuf),
-         ('to', gtk.gdk.Pixbuf),
-         ('info', gobject.TYPE_STRING)))
+         
+    initStatusView = lambda prefix: initTreeView(gladeObject, prefix,
+        (('icon', gtk.gdk.Pixbuf), ('status', gobject.TYPE_STRING)))    
+    homeView = initStatusView('home')
+    deleteView = initStatusView('delete')
+    
+    initEventView = lambda prefix: initTreeView(gladeObject, prefix,
+        (('from', gtk.gdk.Pixbuf), ('to', gtk.gdk.Pixbuf), 
+        ('status', gobject.TYPE_STRING)))
+    dmView = initEventView('dm')
+    favoriteView = initEventView('favorite')
+    retweetView = initEventView('retweet')
+    followView = initEventView('follow')
+    listView = initEventView('list')
+    
     notebook1 = gladeObject.get_widget('notebook1')
     notebook1.connect('switch-page', onSwitchTab)
     trackNotebook = gladeObject.get_widget('trackNotebook')
