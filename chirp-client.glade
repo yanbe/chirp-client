@@ -143,6 +143,7 @@
                                 <property name="label" translatable="yes">Left</property>
                                 <property name="use_underline">True</property>
                                 <property name="draw_as_radio">True</property>
+                                <property name="group">tabPlaceTop</property>
                               </widget>
                             </child>
                           </widget>
@@ -669,7 +670,7 @@
   <widget class="GtkMenu" id="statusPopupMenu">
     <property name="visible">True</property>
     <child>
-      <widget class="GtkMenuItem" id="replyMenu">
+      <widget class="GtkMenuItem" id="replyMenuItem">
         <property name="visible">True</property>
         <property name="label" translatable="yes">Reply</property>
         <property name="use_underline">True</property>
@@ -686,6 +687,13 @@
       <widget class="GtkMenuItem" id="retweetMenuItem">
         <property name="visible">True</property>
         <property name="label" translatable="yes">Retweet</property>
+        <property name="use_underline">True</property>
+      </widget>
+    </child>
+    <child>
+      <widget class="GtkMenuItem" id="followMenuItem">
+        <property name="visible">True</property>
+        <property name="label" translatable="yes">Follow</property>
         <property name="use_underline">True</property>
       </widget>
     </child>

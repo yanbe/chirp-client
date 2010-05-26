@@ -39,31 +39,30 @@ class memoize(object):
             self._cache[args] = self._func(*args)
         return self._cache[args]
 
+class UrlOpenThread(threading.Thread):
+    def __init__(self, url):
+        threading.Thread.__init__(self)
+        self.url = url 
+        self.contents = None
+
+    def run(self):
+        try:
+            f = urllib2.urlopen(self.url)
+            self.contents = f.read()
+        except (urllib2.HTTPError, urllib2.URLError, ValueError) as e:
+            print e
+    
+    def getContents(self):
+        return self.contents
+
 @memoize
 def getStatus(status_id):
-    class GetStatusThread(threading.Thread):
-        def __init__(self, statusURL):
-            threading.Thread.__init__(self)
-            self.statusURL = statusURL
-            self.status = None
-        def run(self):
-            for i in range(3):
-                try:
-                    f = urllib2.urlopen(self.statusURL)
-                    self.status = json.load(f)
-                    break
-                except (urllib2.HTTPError, urllib2.URLError, ValueError) as e:
-                    print e
-
-        def getStatus(self):
-            return self.status
-            
-    t = GetStatusThread('http://twitter.com/statuses/show/%s.json' %  status_id)
+    t = UrlOpenThread('http://twitter.com/statuses/show/%s.json' %  status_id)
     t.start()
     while t.isAlive():
         gtk.main_iteration()
     #t.join()
-    return  t.getStatus()
+    return  json.loads(t.getContents())
 
 def quoteUnicodeURL(unicodeURL):
     sep_pos = unicodeURL.rindex('/')
@@ -99,8 +98,8 @@ def toLocalTime(created_at, fmt="%m/%d %H:%M:%S"):
     d = datetime.datetime(*(datetime_tuple[:-2]))
     return (d+datetime.timedelta(hours=9)).strftime(fmt)
 
-def markupStatus(status, screen_name_container='user'):
-    markup = ''
+def markupStatus(status, event=None, screen_name_container='user'):
+    markup = '' if event!='unfavorite' else '[u]'
     text = glib.markup_escape_text(status['text'])
     def markupRepl(matchobj):
         return '<span foreground="blue">%s </span>' % matchobj.group(0)
@@ -121,7 +120,7 @@ def markupStatus(status, screen_name_container='user'):
     return markup
     
 def markupUserInfo(user):
-    markup = '<b>%s</b>' % user['screen_name']
+    markup = '<b>%s</b> (following: %s)' % (user['screen_name'], not user['following'])
     if user['name']:
         markup += '\n<b>Name</b> %s' % glib.markup_escape_text(user['name'])
     if user['location']:
@@ -140,7 +139,7 @@ def markupUserInfo(user):
         markup += '\n<b>Favorites</b> %s' % user['favourites_count']
     markup += '\n<b>Since</b> %s' % toLocalTime(user['created_at'],
         fmt='%Y/%m/%d %H:%M:%S')
-
+    
     return markup
 
 def markupListInfo(chunk):
@@ -164,6 +163,7 @@ def createRow(chunk):
     if 'text' in chunk:
         icon = getPixbufFromIconURL(chunk['user']['profile_image_url'])
         icon.set_data('status', chunk)
+        icon.set_data('user', chunk['user'])
         markup = markupStatus(chunk)
         return [icon, markup]
     elif 'delete' in chunk:
@@ -179,18 +179,19 @@ def createRow(chunk):
     elif 'direct_message' in chunk:
         chunk = chunk['direct_message']
         icon_source = getPixbufFromIconURL(chunk['sender']['profile_image_url'])
-        icon_source.set_data('status', chunk['sender'])
+        icon_source.set_data('user', chunk['sender'])
         icon_target = getPixbufFromIconURL(chunk['recipient']['profile_image_url'])
-        icon_target.set_data('status', chunk['recipient'])
+        icon_target.set_data('user', chunk['recipient'])
         markup = markupStatus(chunk, screen_name_container='sender')
         return [icon_source, icon_target, markup]
     elif 'event' in chunk:
         icon_source = getPixbufFromIconURL(chunk['source']['profile_image_url'])
-        icon_source.set_data('status', chunk['source'])
+        icon_source.set_data('user', chunk['source'])
         icon_target = getPixbufFromIconURL(chunk['target']['profile_image_url'])
-        icon_target.set_data('status', chunk['target'])
+        icon_target.set_data('user', chunk['target'])
         if chunk['event'] in ('favorite', 'unfavorite', 'retweet'):
-            markup = markupStatus(chunk['target_object'])
+            markup = markupStatus(chunk['target_object'], event=chunk['event'])
+            icon_source.set_data('status', chunk['target_object'])
         elif chunk['event']=='follow':
             markup = markupUserInfo(chunk['target'])
         elif chunk['event'].startswith('list_'):
@@ -247,7 +248,8 @@ class ChirpStreamThread(threading.Thread):
             row = createRow(chunk)
             if 'text' in chunk:
                 getStatus._cache[(chunk['id'],)] = chunk
-                if chunk['in_reply_to_status_id']:
+                if chunk['in_reply_to_status_id'] or \
+                    re.findall('@\w+', chunk['text']):
                     targetView = self.replyView
                 else:
                     targetView = self.homeView
@@ -265,7 +267,7 @@ class ChirpStreamThread(threading.Thread):
             if targetView==self.replyView:
                 lastRow = targetView.props.model.prepend(None, row)
                 targetView.props.model.append(lastRow, [blankIcon, 
-                        chunk['in_reply_to_status_id']])
+                    chunk['in_reply_to_status_id']])
             else:
                 targetView.props.model.prepend(row)
                 
@@ -278,22 +280,54 @@ def resize_wrap(scroll, allocation):
 #    renderer.props.wrap_width = column.get_width()
     renderer.props.wrap_width = column.get_width()-renderer.props.xpad*2-view.style_get_property('horizontal-separator')*2
 
+def getUserTimeline(screen_name, max_id):
+    s = 'http://api.twitter.com/1/statuses/user_timeline/%s.json?max_id=%s' % (
+        screen_name, max_id)
+    t = UrlOpenThread(s)
+    t.start()
+    while t.isAlive():
+        gtk.main_iteration()
+    timeline = json.loads(t.getContents())
+    
+    for chunk in timeline:
+        getStatus._cache[(chunk['id'],)] = chunk
+    return timeline
+    
+def guessInReplyToStatusIds(status):
+    in_reply_to_status_ids = []
+    for screen_name in re.findall('@\w+', status['text']):
+        screen_name = screen_name[1:]
+        timeline = getUserTimeline(screen_name, status['id'])
+        content_start = status['text'].index(screen_name)+len(screen_name)+2
+        snippet = status['text'][content_start:content_start+5]
+        for status in timeline:
+            if status['text'].find(snippet) > -1:
+                in_reply_to_status_ids.append(status['id'])
+                break
+        else:
+            in_reply_to_status_ids.extend(timeline[0:3])
+    return in_reply_to_status_ids
+
 def expand_conversation(homeView, iter, path):
     homeStore = homeView.props.model
     loadingIter = homeStore.iter_nth_child(iter, 0)
     tempRow = homeStore[path].iterchildren().next()
-    in_reply_to_status_id = tempRow[1]
+    in_reply_to_status_ids = [tempRow[1]]
+    if in_reply_to_status_ids[0]==None:
+        status = homeStore[path][0].get_data('status')
+        in_reply_to_status_ids = guessInReplyToStatusIds(status)
     tempRow[1] = '<i>Loading...</i>'
-    while in_reply_to_status_id:
-        status = getStatus(in_reply_to_status_id)
-        if status != None:
-            row = createRow(status)
-            homeStore.insert_before(iter, loadingIter, row)
-            in_reply_to_status_id = status['in_reply_to_status_id']
-        else:
-            row = [blankIcon, '(<i>protected or deleted tweet</i>)']
-            homeStore.insert_before(iter, loadingIter, row)
-            in_reply_to_status_id = None
+    for in_reply_to_status_id in in_reply_to_status_ids:
+        while in_reply_to_status_id:
+            status = getStatus(in_reply_to_status_id)
+            if status != None:
+                row = createRow(status)
+                homeStore.insert_before(iter, loadingIter, row)
+                in_reply_to_status_id = status['in_reply_to_status_id']
+            else:
+                row = [blankIcon, '(<i>protected or deleted tweet</i>)']
+                homeStore.insert_before(iter, loadingIter, row)
+                in_reply_to_status_id = None
 
     homeStore.remove(loadingIter)
 
@@ -314,22 +348,29 @@ def onRowActivated(treeView, path, view_column):
             webbrowser.open(url)
     elif rendererType==gtk.CellRendererPixbuf:
         target_column = treeView.get_columns().index(view_column)
-        status = row[target_column].get_data('status')
-        target_data = status['user'] if 'user' in status else status
-        webbrowser.open('http://twitter.com/'+
-            target_data['screen_name'])
+        user = row[target_column].get_data('user')
+        webbrowser.open('http://twitter.com/'+user['screen_name'])
 
-def onMenuActivated(item, text, status):
+def onMenuActivated(item, text, status, user):
     if text=='Reply':
         newStatus = '@%s ' % status['user']['screen_name']
         statusView.get_buffer().insert_at_cursor(newStatus)
         statusView.set_data('in_reply_to_status_id', status['id'])
-    elif text=='Retweet':
+        statusView.grab_focus()
+        return
+
+    if text=='Retweet':
         u = 'http://api.twitter.com/1/statuses/retweet/%s.json' % status['id']
-        j = json.load(urllib2.urlopen(u, data='')) # data param to be POST
     elif text=='Favorite':
         u = 'http://api.twitter.com/1/favorites/create/%s.json' % status['id']
-        j = json.load(urllib2.urlopen(u, data='')) # data param to be POST
+    elif text=='Follow':
+        u = 'http://api.twitter.com/1/friendships/create/%s.json' % user['id']
+    try:
+        f = urllib2.urlopen(u, data='')
+    except urllib2.HTTPError as e:
+        print e
+    else:
+        j = json.load(f)
 
 def onButtonPressed(treeview, event, statusPopupMenu):
     if event.button == 3:
@@ -338,14 +379,17 @@ def onButtonPressed(treeview, event, statusPopupMenu):
         time = event.time
         pthinfo = treeview.get_path_at_pos(x, y)
         if pthinfo is not None:
-            path, col, cellx, celly = pthinfo
+            path, column, cellx, celly = pthinfo
+            target_column = treeview.get_columns().index(column)
             status = treeview.props.model[path][0].get_data('status')
+            cell = treeview.props.model[path][target_column]
+            user = cell.get_data('user') if type(cell)==gtk.gdk.Pixbuf else None
             treeview.grab_focus()
-            treeview.set_cursor(path, col, 0)
+            treeview.set_cursor(path, column, 0)
             statusPopupMenu.popup(None, None, None, event.button, time)
             for menuItem in statusPopupMenu.get_children():
                 menuItem.connect('activate', onMenuActivated, 
-                    menuItem.props.label, status)
+                    menuItem.props.label, status, user)
             statusPopupMenu.show_all()
 
 def onQueryTooltip(treeview, x, y, keyboard_mode, tooltip):
@@ -354,13 +398,12 @@ def onQueryTooltip(treeview, x, y, keyboard_mode, tooltip):
         path, column, cellx, celly = pthinfo
         if type(column.get_cell_renderers()[0])==gtk.CellRendererPixbuf:
             target_column = treeview.get_columns().index(column)
-            status = treeview.props.model[path][target_column].get_data('status')
-            if status is not None:
-                target_data = status['user'] if 'user' in status else status
-                tooltip.set_markup(markupUserInfo(target_data))
-                tooltip.set_icon(getPixbufFromIconURL(
-                    target_data['profile_image_url']))
-                return True
+            user = treeview.props.model[path][target_column].get_data('user')
+            tooltip.set_markup(markupUserInfo(user))
+            tooltip.set_icon(getPixbufFromIconURL(user['profile_image_url']))
+            return True
+    else:
+        return False
 
 def initTreeView(gladeObject, viewNamePrefix, columnNameTypePairs,
         modelType=gtk.ListStore):
@@ -451,6 +494,13 @@ def onClickTweetButton(tweetButton, statusView):
         data=urllib.urlencode(params))
     statusView.props.buffer.props.text = ''
     statusView.grab_focus()
+
+
+def onTabPlaceChange(item, notebook):
+    if item.props.label=='Left':
+        notebook.set_tab_pos(gtk.POS_LEFT)
+    elif item.props.label=='Top':
+        notebook.set_tab_pos(gtk.POS_TOP)
     
 def main():
     gladeObject = gtk.glade.XML('chirp-client.glade')
@@ -495,7 +545,10 @@ def main():
     tweetButton = gladeObject.get_widget('tweetButton')
     tweetButton.connect('activate', onClickTweetButton, statusView)
     tweetButton.connect('clicked', onClickTweetButton, statusView)
-
+    tabPlaceTop = gladeObject.get_widget('tabPlaceTop')
+    tabPlaceLeft = gladeObject.get_widget('tabPlaceLeft')
+    tabPlaceTop.connect('activate', onTabPlaceChange, notebook1)
+    tabPlaceLeft.connect('activate', onTabPlaceChange, notebook1)
     mainWindow.show()
     gtk.gdk.threads_init()
 
