@@ -44,16 +44,21 @@ class UrlOpenThread(threading.Thread):
         threading.Thread.__init__(self)
         self.url = url 
         self.contents = None
+        self.error = None
 
     def run(self):
         try:
             f = urllib2.urlopen(self.url)
             self.contents = f.read()
         except (urllib2.HTTPError, urllib2.URLError, ValueError) as e:
-            print e
+            print e, self.url
+            self.error = e
     
     def getContents(self):
         return self.contents
+    
+    def getError(self):
+        return self.error
 
 @memoize
 def getStatus(status_id):
@@ -62,7 +67,10 @@ def getStatus(status_id):
     while t.isAlive():
         gtk.main_iteration()
     #t.join()
-    return  json.loads(t.getContents())
+    if t.getError()==None:
+        return json.loads(t.getContents())
+    else:
+        return None
 
 def quoteUnicodeURL(unicodeURL):
     sep_pos = unicodeURL.rindex('/')
@@ -103,7 +111,7 @@ def markupStatus(status, event=None, screen_name_container='user'):
     text = glib.markup_escape_text(status['text'])
     def markupRepl(matchobj):
         return '<span foreground="blue">%s </span>' % matchobj.group(0)
-    text = re.sub('http://\S+', markupRepl, text)
+    text = re.sub('\S+://\S+', markupRepl, text)
     markup += '<b>%s</b> %s' % (status[screen_name_container]['screen_name'],
         text)
         
@@ -287,47 +295,62 @@ def getUserTimeline(screen_name, max_id):
     t.start()
     while t.isAlive():
         gtk.main_iteration()
+    if t.getError()!=None:
+        raise t.getError()
     timeline = json.loads(t.getContents())
-    
     for chunk in timeline:
         getStatus._cache[(chunk['id'],)] = chunk
     return timeline
     
-def guessInReplyToStatusIds(status):
+def guessInReplyToStatusIds(source_status):
     in_reply_to_status_ids = []
-    for screen_name in re.findall('@\w+', status['text']):
+    for screen_name in re.findall('@\w+', source_status['text']):
         screen_name = screen_name[1:]
-        timeline = getUserTimeline(screen_name, status['id'])
-        content_start = status['text'].index(screen_name)+len(screen_name)+2
-        snippet = status['text'][content_start:content_start+5]
-        for status in timeline:
-            if status['text'].find(snippet) > -1:
-                in_reply_to_status_ids.append(status['id'])
+        content_start = source_status['text'].find(screen_name)+len(screen_name)+2
+        snippet = source_status['text'][content_start:content_start+3]
+        timeline = getUserTimeline(screen_name, source_status['id'])
+        for target_status in timeline:
+            if target_status['text'].find(snippet) > -1 and \
+                    source_status['user']['screen_name'] != screen_name:
+                in_reply_to_status_ids.append(target_status['id'])
                 break
         else:
-            in_reply_to_status_ids.extend(timeline[0:3])
+            in_reply_to_status_ids.extend(
+                [guessed_status['id'] for guessed_status in timeline[0:3]])
     return in_reply_to_status_ids
 
-def expand_conversation(homeView, iter, path):
+def expand_conversation(homeView, iter, path, maxExpand=8):
     homeStore = homeView.props.model
     loadingIter = homeStore.iter_nth_child(iter, 0)
     tempRow = homeStore[path].iterchildren().next()
-    in_reply_to_status_ids = [tempRow[1]]
-    if in_reply_to_status_ids[0]==None:
-        status = homeStore[path][0].get_data('status')
-        in_reply_to_status_ids = guessInReplyToStatusIds(status)
+    in_reply_to_status_ids = []
+    source_status = homeStore[path][0].get_data('status')
+    if source_status['in_reply_to_status_id']:
+        in_reply_to_status_ids.append(source_status['in_reply_to_status_id'])
     tempRow[1] = '<i>Loading...</i>'
-    for in_reply_to_status_id in in_reply_to_status_ids:
-        while in_reply_to_status_id:
-            status = getStatus(in_reply_to_status_id)
-            if status != None:
-                row = createRow(status)
-                homeStore.insert_before(iter, loadingIter, row)
-                in_reply_to_status_id = status['in_reply_to_status_id']
+    inserted_status_ids = set()
+    if not in_reply_to_status_ids:
+        in_reply_to_status_ids.extend(guessInReplyToStatusIds(source_status))
+    while in_reply_to_status_ids and len(inserted_status_ids)<maxExpand:
+        in_reply_to_status_id = in_reply_to_status_ids.pop(0)
+        if in_reply_to_status_id in inserted_status_ids: 
+            continue
+        in_reply_to_status = getStatus(in_reply_to_status_id)
+        if in_reply_to_status != None:
+            row = createRow(in_reply_to_status)
+            homeStore.insert_before(iter, loadingIter, row)
+            if in_reply_to_status['in_reply_to_status_id'] != None:
+                in_reply_to_status_ids.append(
+                    in_reply_to_status['in_reply_to_status_id'])
             else:
-                row = [blankIcon, '(<i>protected or deleted tweet</i>)']
-                homeStore.insert_before(iter, loadingIter, row)
-                in_reply_to_status_id = None
+                in_reply_to_status_ids.extend(
+                    guessInReplyToStatusIds(in_reply_to_status))
+        
+        else:
+            row = [blankIcon, '(<i>protected or deleted tweet</i>)']
+            homeStore.insert_before(iter, loadingIter, row)
+
+        inserted_status_ids.add(in_reply_to_status_id)
 
     homeStore.remove(loadingIter)
 
@@ -337,9 +360,9 @@ def terminate_chirp(window, chirp):
     sys.exit()
 
 def extractURLs(text):
-    return [url for url in re.findall('http://\S+', text)]
+    return [url for url in re.findall('\S+://\S+', text)]
 
-def onRowActivated(treeView, path, view_column):
+def onRowActivated(treeView, path, view_column, gladeObject):
     row = treeView.props.model[path]
     rendererType = type(view_column.get_cell_renderers()[0])
     if rendererType==gtk.CellRendererText:
@@ -347,9 +370,33 @@ def onRowActivated(treeView, path, view_column):
         for url in extractURLs(text):
             webbrowser.open(url)
     elif rendererType==gtk.CellRendererPixbuf:
+        userInfoView = gladeObject.get_widget('userInfoView')
+        if not userInfoView.props.model:
+          userInfoView = initTreeView(gladeObject, 'userInfo',
+          (('icon', gtk.gdk.Pixbuf), ('status', gobject.TYPE_STRING)))
+        else:
+          userInfoView.props.model.clear()
         target_column = treeView.get_columns().index(view_column)
         user = row[target_column].get_data('user')
-        webbrowser.open('http://twitter.com/'+user['screen_name'])
+        icon = getPixbufFromIconURL(user['profile_image_url'])
+        userInfoView.props.model.append([icon, markupUserInfo(user)])
+
+        userTimelineWindow = gladeObject.get_widget('userTimelineWindow')
+        userTimelineWindow.props.title = user['screen_name']
+        userTimelineWindow.show()
+        
+        userTimelineView = gladeObject.get_widget('userTimelineView')
+        if not userTimelineView.props.model:
+          userTimelineView = initTreeView(gladeObject, 'userTimeline',
+            (('icon', gtk.gdk.Pixbuf), ('status', gobject.TYPE_STRING)))
+        else:
+          userTimelineView.props.model.clear()
+
+        source_status = row[0].get_data('status')
+        timeline = getUserTimeline(user['screen_name'], source_status['id'])
+        for target_status in timeline:
+          userTimelineView.props.model.append(createRow(target_status))
+
 
 def onMenuActivated(item, text, status, user):
     if text=='Reply':
@@ -399,9 +446,12 @@ def onQueryTooltip(treeview, x, y, keyboard_mode, tooltip):
         if type(column.get_cell_renderers()[0])==gtk.CellRendererPixbuf:
             target_column = treeview.get_columns().index(column)
             user = treeview.props.model[path][target_column].get_data('user')
-            tooltip.set_markup(markupUserInfo(user))
-            tooltip.set_icon(getPixbufFromIconURL(user['profile_image_url']))
-            return True
+            if user:
+                tooltip.set_markup(markupUserInfo(user))
+                tooltip.set_icon(getPixbufFromIconURL(user['profile_image_url']))
+                return True
+            else:
+                return False
     else:
         return False
 
@@ -430,12 +480,13 @@ def initTreeView(gladeObject, viewNamePrefix, columnNameTypePairs,
         view.append_column(column)
 
     scroll = gladeObject.get_widget(viewNamePrefix+'Scroll')
-    scroll.connect_after('size-allocate', resize_wrap)
-    scroll.connect('scroll-event', onWheelScroll)
+    if scroll:
+        scroll.connect_after('size-allocate', resize_wrap)
+        scroll.connect('scroll-event', onWheelScroll)
     #scroll.get_vscrollbar().connect('adjust-bounds', onCursorScroll)
 #    scroll.get_vscrollbar().connect('value-changed', onValueChanged)
-
-    view.connect('row-activated', onRowActivated)
+    userTimelineWindow = gladeObject.get_widget('userTimelineWindow')
+    view.connect('row-activated', onRowActivated, gladeObject)
     statusView = gladeObject.get_widget('statusView')
     statusPopupMenu = gladeObject.get_widget('statusPopupMenu')
     view.connect('button-press-event', onButtonPressed, statusPopupMenu)
@@ -475,8 +526,9 @@ def onWheelScroll(scrolledWindow, event):
     if event.direction==gtk.gdk.SCROLL_UP and \
             scrolledWindow.get_vadjustment().get_value()==0.0:
         notebook = scrolledWindow.get_parent()
-        label = notebook.get_tab_label(scrolledWindow)
-        label.set_markup(label.get_text())
+        if type(notebook)==gtk.Notebook:
+          label = notebook.get_tab_label(scrolledWindow)
+          label.set_markup(label.get_text())
 
 def onValueChanged(scrollBar):
     if scrollBar.get_value()==0.0:
@@ -551,7 +603,6 @@ def main():
     tabPlaceLeft.connect('activate', onTabPlaceChange, notebook1)
     mainWindow.show()
     gtk.gdk.threads_init()
-
     chirp.start()
     gtk.main()
 
