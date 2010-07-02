@@ -1,10 +1,17 @@
+* Audience
+Active Twitter users prefereably using GNOME Desktop on Ubuntu 10.4.
+
 * What's this?
-This is a Twitter client mainly using User Streams not API.
+This is a Twitter client mainly using not REST API but User Streams API.
+http://apiwiki.twitter.com/ChirpUserStreams
 
 As chirp-client is using User Streams, favorites, retweets, replies, direct
 messages, following activities, list activities as well as friend timeline are
-shown almost in real-time. It is realized by continous HTTP connection (a
-stream), not polling for Twitter server.
+updated in real-time. It is realized by continous HTTP connection (a stream), 
+instead of polling for Twitter server.
+
+* Development status
+Prototype, pre-alpha or tech demo. Thus the author does not intend serious use.
 
 * Screenshots
 See wiki. http://wiki.github.com/yanbe/chirp-client/ 
@@ -20,4 +27,3 @@ chirp-client.py and install non-standard Python modules you don't have.
 
 * How to run
 $ python chirp-client.py
-
